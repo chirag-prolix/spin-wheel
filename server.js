@@ -156,6 +156,5 @@ app.get('/api/coupon', async (req, res) => {
   }
 });
 
-app.listen(process.env.PORT, () =>
-  console.log(`Spin Wheel backend running on port ${process.env.PORT}`)
-);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Running on port ${PORT}`));
