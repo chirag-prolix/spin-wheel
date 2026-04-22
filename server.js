@@ -8,14 +8,6 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: `https://${process.env.SHOPIFY_STORE}` }));
 
-const STORE  = process.env.SHOPIFY_STORE;
-const TOKEN  = process.env.SHOPIFY_ACCESS_TOKEN;
-const API    = `https://${STORE}/admin/api/2024-01`;
-const HEADERS = {
-  'X-Shopify-Access-Token': TOKEN,
-  'Content-Type': 'application/json',
-};
-
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function generateCode(discount) {
@@ -24,7 +16,17 @@ function generateCode(discount) {
 }
 
 async function shopify(method, path, data = null) {
-  const opts = { method, url: `${API}${path}`, headers: HEADERS };
+  const store = process.env.SHOPIFY_STORE;
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  const url   = `https://${store}/admin/api/2024-01${path}`;
+  const opts  = {
+    method,
+    url,
+    headers: {
+      'X-Shopify-Access-Token': token,
+      'Content-Type': 'application/json',
+    },
+  };
   if (data) opts.data = data;
   const res = await axios(opts);
   return res.data;
