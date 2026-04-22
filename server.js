@@ -156,5 +156,28 @@ app.get('/api/coupon', async (req, res) => {
   }
 });
 
+app.get('/auth', (req, res) => {
+  const shop = process.env.SHOPIFY_STORE;
+  const redirectUri = `https://${req.headers.host}/auth/callback`;
+  const installUrl = `https://${shop}/admin/oauth/authorize` +
+    `?client_id=${process.env.SHOPIFY_CLIENT_ID}` +
+    `&scope=write_price_rules,write_discounts,write_customers,read_customers` +
+    `&redirect_uri=${redirectUri}`;
+  res.redirect(installUrl);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const { code } = req.query;
+  const shop = process.env.SHOPIFY_STORE;
+  const tokenRes = await axios.post(`https://${shop}/admin/oauth/access_token`, {
+    client_id:     process.env.SHOPIFY_CLIENT_ID,
+    client_secret: process.env.SHOPIFY_SECRET,
+    code,
+  });
+  const accessToken = tokenRes.data.access_token;
+  console.log('✅ ACCESS TOKEN:', accessToken);
+  res.send(`<h2>Success! Token saved to logs.</h2><p>Go copy it from Railway logs now.</p>`);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Running on port ${PORT}`));
