@@ -253,29 +253,24 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
   try {
     const result = await shopify('POST', '/webhooks.json', {
       webhook: {
-        topic:   'orders/paid',
-        address: 'https://spin-wheel-production-c4f7.up.railway.app/api/webhooks/orders-paid',
+        topic:   'discounts/redeemcode_removed',
+        address: 'https://spin-wheel-production-c4f7.up.railway.app/api/webhooks/code-redeemed',
         format:  'json',
       }
     });
     res.json({ success: true, webhook: result.webhook });
-
   } catch (err) {
-    // Return full Shopify error so we can see exactly what failed
     const shopifyError = err.response?.data || err.message;
     console.error('❌ Webhook setup failed:', shopifyError);
-    res.status(500).json({
-      error:   'Webhook creation failed',
-      details: shopifyError
-    });
+    res.status(500).json({ error: 'Webhook creation failed', details: shopifyError });
   }
 });
 
-app.post('/api/webhooks/orders-paid',
+app.post('/api/webhooks/code-redeemed',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
     try {
-      // Verify request is genuinely from Shopify
+      // Verify request is from Shopify
       const hmac      = req.headers['x-shopify-hmac-sha256'];
       const generated = crypto
         .createHmac('sha256', process.env.SHOPIFY_SECRET)
@@ -283,63 +278,64 @@ app.post('/api/webhooks/orders-paid',
         .digest('base64');
 
       if (generated !== hmac) {
-        console.error('❌ Webhook HMAC verification failed');
+        console.error('❌ Webhook HMAC failed');
         return res.status(401).send('Unauthorized');
       }
 
-      const order         = JSON.parse(req.body);
-      const discountCodes = order.discount_codes || [];
+      const payload = JSON.parse(req.body);
+      console.log('🎯 Code redeemed webhook:', JSON.stringify(payload));
 
-      // Only process if a LUCKY spin wheel code was used
-      const spinCode = discountCodes.find(dc => dc.code && dc.code.startsWith('LUCKY'));
-      if (!spinCode) return res.status(200).send('OK'); // not a spin wheel order
+      // payload.code contains the discount code that was used
+      const usedCode = payload.code;
+      if (!usedCode || !usedCode.startsWith('LUCKY')) {
+        return res.status(200).send('OK'); // not a spin wheel code
+      }
 
-      const email  = order.email;
-      if (!email)  return res.status(200).send('OK');
-
-      // Find the customer
-      const search = await shopify('GET',
-        `/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`
+      // Search for customer who has this code in their metafield
+      const customers = await shopify('GET',
+        '/customers/search.json?query=tag:spin-wheel-winner&limit=250'
       );
-      if (search.customers.length === 0) return res.status(200).send('OK');
 
-      const customerId = search.customers[0].id;
+      for (const customer of customers.customers) {
+        const mf = await shopify('GET',
+          `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
+        );
 
-      // Get their spin wheel metafield
-      const mf = await shopify('GET',
-        `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
-      );
-      if (mf.metafields.length === 0) return res.status(200).send('OK');
+        if (mf.metafields.length === 0) continue;
 
-      const metafield = mf.metafields[0];
-      const current   = JSON.parse(metafield.value);
+        const metafield = mf.metafields[0];
+        const current   = JSON.parse(metafield.value);
 
-      // Mark as redeemed
-      await shopify('PUT',
-        `/customers/${customerId}/metafields/${metafield.id}.json`,
-        {
-          metafield: {
-            id:    metafield.id,
-            value: JSON.stringify({
-              ...current,
-              used:        true,
-              redeemed_at: new Date().toISOString(),
-              order_id:    order.id,
-            }),
-            type: 'json',
+        // Match the code
+        if (current.code !== usedCode) continue;
+
+        // Mark as redeemed
+        await shopify('PUT',
+          `/customers/${customer.id}/metafields/${metafield.id}.json`,
+          {
+            metafield: {
+              id:    metafield.id,
+              value: JSON.stringify({
+                ...current,
+                used:        true,
+                redeemed_at: new Date().toISOString(),
+              }),
+              type: 'json',
+            }
           }
-        }
-      );
+        );
 
-      console.log(`✅ Marked code ${spinCode.code} as redeemed for ${email}`);
+        console.log(`✅ Marked ${usedCode} as redeemed for customer ${customer.id}`);
+        break;
+      }
+
       res.status(200).send('OK');
 
     } catch (err) {
-      console.error('❌ Webhook error:', err.message);
+      console.error('❌ Webhook handler error:', err.message);
       res.status(500).send('Error');
     }
   }
 );
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
