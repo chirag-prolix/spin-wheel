@@ -244,51 +244,5 @@ app.get('/api/coupon', async (req, res) => {
   }
 });
 
-// GET /api/admin/fix-subscriptions — ONE-TIME fix for existing unsubscribed customers
-// Run once then remove this route
-app.get('/api/admin/fix-subscriptions', async (req, res) => {
-  const secret = req.headers['x-admin-key'];
-  if (secret !== process.env.ADMIN_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const data = await shopify('GET',
-      '/customers/search.json?query=tag:spin-wheel-winner&limit=250'
-    );
-
-    let fixed = 0;
-    let skipped = 0;
-
-    for (const c of data.customers) {
-      if (c.email_marketing_consent?.state !== 'subscribed') {
-        await shopify('PUT', `/customers/${c.id}.json`, {
-          customer: {
-            id: c.id,
-            email_marketing_consent: {
-              state:              'subscribed',
-              opt_in_level:       'single_opt_in',
-              consent_updated_at: new Date().toISOString(),
-            },
-          },
-        });
-        fixed++;
-      } else {
-        skipped++;
-      }
-    }
-
-    return res.json({
-      success: true,
-      total:   data.customers.length,
-      fixed,
-      skipped,
-    });
-
-  } catch (err) {
-    console.error('❌ fix-subscriptions error:', err.message);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
