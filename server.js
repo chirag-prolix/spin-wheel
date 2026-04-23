@@ -244,5 +244,95 @@ app.get('/api/coupon', async (req, res) => {
   }
 });
 
+// Add this temporary route to server.js
+app.get('/api/admin/setup-webhook', async (req, res) => {
+  const secret = req.headers['x-admin-key'];
+  if (secret !== process.env.ADMIN_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    await shopify('POST', '/webhooks.json', {
+      webhook: {
+        topic:   'orders/paid',
+        address: 'https://spin-wheel-production-c4f7.up.railway.app/api/webhooks/orders-paid',
+        format:  'json',
+      }
+    });
+    res.json({ success: true, message: 'Webhook registered successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/webhooks/orders-paid',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      // Verify request is genuinely from Shopify
+      const hmac      = req.headers['x-shopify-hmac-sha256'];
+      const generated = crypto
+        .createHmac('sha256', process.env.SHOPIFY_SECRET)
+        .update(req.body)
+        .digest('base64');
+
+      if (generated !== hmac) {
+        console.error('❌ Webhook HMAC verification failed');
+        return res.status(401).send('Unauthorized');
+      }
+
+      const order         = JSON.parse(req.body);
+      const discountCodes = order.discount_codes || [];
+
+      // Only process if a LUCKY spin wheel code was used
+      const spinCode = discountCodes.find(dc => dc.code && dc.code.startsWith('LUCKY'));
+      if (!spinCode) return res.status(200).send('OK'); // not a spin wheel order
+
+      const email  = order.email;
+      if (!email)  return res.status(200).send('OK');
+
+      // Find the customer
+      const search = await shopify('GET',
+        `/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`
+      );
+      if (search.customers.length === 0) return res.status(200).send('OK');
+
+      const customerId = search.customers[0].id;
+
+      // Get their spin wheel metafield
+      const mf = await shopify('GET',
+        `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
+      );
+      if (mf.metafields.length === 0) return res.status(200).send('OK');
+
+      const metafield = mf.metafields[0];
+      const current   = JSON.parse(metafield.value);
+
+      // Mark as redeemed
+      await shopify('PUT',
+        `/customers/${customerId}/metafields/${metafield.id}.json`,
+        {
+          metafield: {
+            id:    metafield.id,
+            value: JSON.stringify({
+              ...current,
+              used:        true,
+              redeemed_at: new Date().toISOString(),
+              order_id:    order.id,
+            }),
+            type: 'json',
+          }
+        }
+      );
+
+      console.log(`✅ Marked code ${spinCode.code} as redeemed for ${email}`);
+      res.status(200).send('OK');
+
+    } catch (err) {
+      console.error('❌ Webhook error:', err.message);
+      res.status(500).send('Error');
+    }
+  }
+);
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
