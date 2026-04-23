@@ -6,9 +6,9 @@ const crypto  = require('crypto');
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: '*' }));   // tighten to your domain after testing
+app.use(cors({ origin: '*' }));
 
-// ─── Dynamic Shopify helper (reads env fresh each call) ──────────────────────
+// ─── Dynamic Shopify helper ───────────────────────────────────────────────────
 async function shopify(method, path, data = null) {
   const store = process.env.SHOPIFY_STORE;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
@@ -25,15 +25,23 @@ async function shopify(method, path, data = null) {
   return res.data;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function generateCode(discount) {
   const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
   return `LUCKY${discount}-${rand}`;
 }
 
+function getExpiryDate(days = 7) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+}
+
 // ─── Create Price Rule + Discount Code ───────────────────────────────────────
 async function createDiscount(discountPct, email) {
-  const code = generateCode(discountPct);
+  const code      = generateCode(discountPct);
+  const expiresAt = getExpiryDate(7); // code expires in 7 days
+
   const { price_rule } = await shopify('POST', '/price_rules.json', {
     price_rule: {
       title:             `SpinWin ${discountPct}% — ${email}`,
@@ -46,30 +54,64 @@ async function createDiscount(discountPct, email) {
       usage_limit:       1,
       once_per_customer: true,
       starts_at:         new Date().toISOString(),
+      ends_at:           expiresAt,   // ← 7-day expiry
     },
   });
+
   const { discount_code } = await shopify(
     'POST',
     `/price_rules/${price_rule.id}/discount_codes.json`,
     { discount_code: { code } }
   );
-  return { code, priceRuleId: price_rule.id, discountCodeId: discount_code.id };
+
+  return {
+    code,
+    priceRuleId:    price_rule.id,
+    discountCodeId: discount_code.id,
+    expiresAt,
+  };
 }
 
-// ─── Find or Create Customer ──────────────────────────────────────────────────
+// ─── Find or Create Customer (with email subscription) ───────────────────────
 async function upsertCustomer(email, firstName) {
   const search = await shopify('GET',
     `/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`
   );
-  if (search.customers.length > 0) return search.customers[0].id;
+
+  if (search.customers.length > 0) {
+    const existing = search.customers[0];
+
+    // Update subscription if not already subscribed
+    if (existing.email_marketing_consent?.state !== 'subscribed') {
+      await shopify('PUT', `/customers/${existing.id}.json`, {
+        customer: {
+          id: existing.id,
+          email_marketing_consent: {
+            state:              'subscribed',
+            opt_in_level:       'single_opt_in',
+            consent_updated_at: new Date().toISOString(),
+          },
+        },
+      });
+    }
+
+    return existing.id;
+  }
+
+  // Create new customer with email subscription
   const { customer } = await shopify('POST', '/customers.json', {
     customer: {
-      first_name:        firstName,
+      first_name: firstName,
       email,
-      accepts_marketing: true,
-      tags:              'spin-wheel-winner',
+      tags:       'spin-wheel-winner',
+      email_marketing_consent: {
+        state:              'subscribed',      // ← Subscribed
+        opt_in_level:       'single_opt_in',   // ← Form submission = consent
+        consent_updated_at: new Date().toISOString(),
+      },
     },
   });
+
   return customer.id;
 }
 
@@ -79,6 +121,7 @@ async function saveMetafield(customerId, payload) {
     `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
   );
   if (existing.metafields.length > 0) throw new Error('ALREADY_SPUN');
+
   await shopify('POST', `/customers/${customerId}/metafields.json`, {
     metafield: {
       namespace: 'spin_wheel',
@@ -89,10 +132,14 @@ async function saveMetafield(customerId, payload) {
   });
 }
 
-// ─── Routes ──────────────────────────────────────────────────────────────────
+// ─── Routes ───────────────────────────────────────────────────────────────────
 
-// Health check — confirms server is alive
-app.get('/health', (req, res) => res.json({ status: 'ok', store: process.env.SHOPIFY_STORE }));
+// Health check
+app.get('/health', (req, res) => res.json({
+  status: 'ok',
+  store:  process.env.SHOPIFY_STORE,
+  time:   new Date().toISOString(),
+}));
 
 // OAuth Step 1
 app.get('/auth', (req, res) => {
@@ -109,7 +156,7 @@ app.get('/auth', (req, res) => {
 app.get('/auth/callback', async (req, res) => {
   try {
     const { code } = req.query;
-    const shop = process.env.SHOPIFY_STORE;
+    const shop     = process.env.SHOPIFY_STORE;
     const tokenRes = await axios.post(`https://${shop}/admin/oauth/access_token`, {
       client_id:     process.env.SHOPIFY_CLIENT_ID,
       client_secret: process.env.SHOPIFY_SECRET,
@@ -119,7 +166,7 @@ app.get('/auth/callback', async (req, res) => {
     console.log('✅ ACCESS TOKEN:', accessToken);
     res.send(`
       <h2 style="font-family:sans-serif;color:green">✅ Success!</h2>
-      <p style="font-family:sans-serif">Copy this token and add it to Railway variables as SHOPIFY_ACCESS_TOKEN:</p>
+      <p style="font-family:sans-serif">Add this to Railway as SHOPIFY_ACCESS_TOKEN:</p>
       <code style="font-size:18px;background:#f0f0f0;padding:10px;display:block">${accessToken}</code>
     `);
   } catch (err) {
@@ -128,42 +175,120 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
-// POST /api/spin
+// POST /api/spin — main spin endpoint
 app.post('/api/spin', async (req, res) => {
   try {
     const { email, firstName, discount } = req.body;
-    if (!email || !firstName)              return res.status(400).json({ error: 'Missing fields' });
-    if (![10, 20, 30].includes(+discount)) return res.status(400).json({ error: 'Invalid discount' });
+
+    if (!email || !firstName)
+      return res.status(400).json({ error: 'Missing fields' });
+    if (![10, 20, 30].includes(+discount))
+      return res.status(400).json({ error: 'Invalid discount' });
+
     const disc       = +discount;
     const customerId = await upsertCustomer(email, firstName);
-    const { code, priceRuleId } = await createDiscount(disc, email);
+    const { code, priceRuleId, expiresAt } = await createDiscount(disc, email);
+
     await saveMetafield(customerId, {
-      code, discount: disc, priceRuleId,
-      used: false, created_at: new Date().toISOString(),
+      code,
+      discount:   disc,
+      priceRuleId,
+      used:       false,
+      created_at: new Date().toISOString(),
+      expires_at: expiresAt,
     });
-    return res.json({ success: true, code, discount: disc });
+
+    return res.json({
+      success:      true,
+      code,
+      discount:     disc,
+      expires_at:   expiresAt,
+      checkout_url: `https://${process.env.SHOPIFY_STORE}/discount/${code}`,
+    });
+
   } catch (err) {
     if (err.message === 'ALREADY_SPUN')
       return res.status(409).json({ error: 'You have already claimed a discount.' });
-    console.error(err.response?.data || err.message);
+
+    console.error('❌ /api/spin error:', err.response?.data || err.message);
     return res.status(500).json({ error: 'Something went wrong.' });
   }
 });
 
-// GET /api/coupon
+// GET /api/coupon?customerId=xxx — fetch saved coupon for account page
 app.get('/api/coupon', async (req, res) => {
   try {
     const { customerId } = req.query;
-    if (!customerId) return res.status(400).json({ error: 'Missing customerId' });
+    if (!customerId)
+      return res.status(400).json({ error: 'Missing customerId' });
+
     const data = await shopify('GET',
       `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
     );
-    if (data.metafields.length === 0) return res.json({ coupon: null });
-    return res.json({ coupon: JSON.parse(data.metafields[0].value) });
+
+    if (data.metafields.length === 0)
+      return res.json({ coupon: null });
+
+    const coupon = JSON.parse(data.metafields[0].value);
+
+    // Check if expired
+    if (coupon.expires_at && new Date(coupon.expires_at) < new Date()) {
+      return res.json({ coupon: null, reason: 'expired' });
+    }
+
+    return res.json({ coupon });
+
   } catch (err) {
+    console.error('❌ /api/coupon error:', err.message);
     return res.status(500).json({ error: 'Failed to fetch coupon' });
   }
 });
 
+// GET /api/admin/fix-subscriptions — ONE-TIME fix for existing unsubscribed customers
+// Run once then remove this route
+app.get('/api/admin/fix-subscriptions', async (req, res) => {
+  const secret = req.headers['x-admin-key'];
+  if (secret !== process.env.ADMIN_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const data = await shopify('GET',
+      '/customers/search.json?query=tag:spin-wheel-winner&limit=250'
+    );
+
+    let fixed = 0;
+    let skipped = 0;
+
+    for (const c of data.customers) {
+      if (c.email_marketing_consent?.state !== 'subscribed') {
+        await shopify('PUT', `/customers/${c.id}.json`, {
+          customer: {
+            id: c.id,
+            email_marketing_consent: {
+              state:              'subscribed',
+              opt_in_level:       'single_opt_in',
+              consent_updated_at: new Date().toISOString(),
+            },
+          },
+        });
+        fixed++;
+      } else {
+        skipped++;
+      }
+    }
+
+    return res.json({
+      success: true,
+      total:   data.customers.length,
+      fixed,
+      skipped,
+    });
+
+  } catch (err) {
+    console.error('❌ fix-subscriptions error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
