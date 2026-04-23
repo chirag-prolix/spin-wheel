@@ -251,16 +251,23 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    await shopify('POST', '/webhooks.json', {
+    const result = await shopify('POST', '/webhooks.json', {
       webhook: {
         topic:   'orders/paid',
         address: 'https://spin-wheel-production-c4f7.up.railway.app/api/webhooks/orders-paid',
         format:  'json',
       }
     });
-    res.json({ success: true, message: 'Webhook registered successfully' });
+    res.json({ success: true, webhook: result.webhook });
+
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Return full Shopify error so we can see exactly what failed
+    const shopifyError = err.response?.data || err.message;
+    console.error('❌ Webhook setup failed:', shopifyError);
+    res.status(500).json({
+      error:   'Webhook creation failed',
+      details: shopifyError
+    });
   }
 });
 
