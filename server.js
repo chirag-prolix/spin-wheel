@@ -269,8 +269,12 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
 });
 
 app.post('/api/webhooks/customer-updated', async (req, res) => {
+  // Log immediately — before any processing
+  console.log('🔔 customer-updated webhook received at', new Date().toISOString());
+  console.log('🔔 customer tags:', req.body?.tags);
+  console.log('🔔 customer id:', req.body?.id);
+
   try {
-    // Verify HMAC
     const hmac      = req.headers['x-shopify-hmac-sha256'];
     const generated = crypto
       .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
@@ -279,45 +283,67 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
 
     if (generated !== hmac) {
       console.error('❌ Webhook HMAC failed');
+      console.error('Expected:', generated);
+      console.error('Received:', hmac);
       return res.status(401).send('Unauthorized');
     }
 
+    console.log('✅ HMAC verified');
+
     const customer = req.body;
 
-    // Only process spin-wheel-winner customers
     if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
+      console.log('⏭️ Skipping — not a spin-wheel-winner, tags:', customer.tags);
       return res.status(200).send('OK');
     }
 
-    // Get their spin wheel metafield
+    console.log('🎯 Processing spin-wheel-winner customer:', customer.id);
+
     const mf = await shopify('GET',
       `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
     );
 
-    if (mf.metafields.length === 0) return res.status(200).send('OK');
+    if (mf.metafields.length === 0) {
+      console.log('⏭️ No metafield found for customer:', customer.id);
+      return res.status(200).send('OK');
+    }
 
     const metafield = mf.metafields[0];
     const current   = JSON.parse(metafield.value);
 
-    // Skip if already marked as used
+    console.log('📋 Current metafield:', JSON.stringify(current));
+
     if (current.used) {
-      console.log(`ℹ️ Code ${current.code} already marked as used — skipping`);
+      console.log('ℹ️ Code already marked as used:', current.code);
       return res.status(200).send('OK');
     }
 
-    // Check usage count of the discount code directly from Shopify
-    const discountData = await shopify('GET',
-      `/price_rules/${current.priceRuleId}/discount_codes.json`
-    );
+    // Check discount code usage in Shopify
+    try {
+      const dcData = await shopify('GET',
+        `/price_rules/${current.priceRuleId}/discount_codes.json`
+      );
 
-    const discountCode = discountData.discount_codes.find(
-      dc => dc.code === current.code
-    );
+      const discountCode = dcData.discount_codes.find(
+        dc => dc.code === current.code
+      );
 
-    // If code not found OR usage_count >= 1 → it was redeemed
-    const wasRedeemed = !discountCode || discountCode.usage_count >= 1;
+      console.log('🔍 Discount code data:', JSON.stringify(discountCode));
 
-    if (wasRedeemed) {
+      if (!discountCode) {
+        throw new Error('Code not found — likely redeemed');
+      }
+
+      if (discountCode.usage_count >= 1) {
+        throw new Error('usage_count >= 1 — redeemed');
+      }
+
+      console.log('ℹ️ Code still valid, usage_count:', discountCode.usage_count);
+      return res.status(200).send('OK');
+
+    } catch (checkErr) {
+      console.log('🎯 Marking as redeemed:', checkErr.message);
+
       await shopify('PUT',
         `/customers/${customer.id}/metafields/${metafield.id}.json`,
         {
@@ -332,15 +358,14 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
           }
         }
       );
-      console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
-    } else {
-      console.log(`ℹ️ Code ${current.code} not yet used — usage_count: ${discountCode.usage_count}`);
-    }
 
-    res.status(200).send('OK');
+      console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
+      return res.status(200).send('OK');
+    }
 
   } catch (err) {
     console.error('❌ Customer update webhook error:', err.message);
+    console.error('Stack:', err.stack);
     res.status(500).send('Error');
   }
 });
