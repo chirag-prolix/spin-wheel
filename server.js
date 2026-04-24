@@ -205,6 +205,7 @@ app.post('/api/spin', async (req, res) => {
       code,
       discount:     disc,
       expires_at:   expiresAt,
+      customerId:   customerId, 
       checkout_url: `https://${process.env.SHOPIFY_STORE}/discount/${code}`,
     });
 
