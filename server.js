@@ -268,144 +268,82 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
   }
 });
 
-app.post('/api/webhooks/code-redeemed', async (req, res) => {
-    try {
-      const hmac      = req.headers['x-shopify-hmac-sha256'];
-      const generated = crypto
-        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
-        .update(req.rawBody)
-        .digest('base64');
-
-      if (generated !== hmac) {
-        console.error('❌ Webhook HMAC failed');
-        return res.status(401).send('Unauthorized');
-      }
-
-      const payload = req.body;
-      console.log('🎯 Code redeemed webhook:', JSON.stringify(payload));
-
-      // payload.code contains the discount code that was used
-      const usedCode = payload.code;
-      if (!usedCode || !usedCode.startsWith('LUCKY')) {
-        return res.status(200).send('OK'); // not a spin wheel code
-      }
-
-      // Search for customer who has this code in their metafield
-      const customers = await shopify('GET',
-        '/customers/search.json?query=tag:spin-wheel-winner&limit=250'
-      );
-
-      for (const customer of customers.customers) {
-        const mf = await shopify('GET',
-          `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
-        );
-
-        if (mf.metafields.length === 0) continue;
-
-        const metafield = mf.metafields[0];
-        const current   = JSON.parse(metafield.value);
-
-        // Match the code
-        if (current.code !== usedCode) continue;
-
-        // Mark as redeemed
-        await shopify('PUT',
-          `/customers/${customer.id}/metafields/${metafield.id}.json`,
-          {
-            metafield: {
-              id:    metafield.id,
-              value: JSON.stringify({
-                ...current,
-                used:        true,
-                redeemed_at: new Date().toISOString(),
-              }),
-              type: 'json',
-            }
-          }
-        );
-
-        console.log(`✅ Marked ${usedCode} as redeemed for customer ${customer.id}`);
-        break;
-      }
-
-      res.status(200).send('OK');
-
-    } catch (err) {
-      console.error('❌ Webhook handler error:', err.message);
-      res.status(500).send('Error');
-    }
-  }
-);
-
 app.post('/api/webhooks/customer-updated', async (req, res) => {
-    try {
-      // Verify HMAC
-      const hmac      = req.headers['x-shopify-hmac-sha256'];
-      const generated = crypto
-        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
-        .update(req.rawBody)
-        .digest('base64');
+  try {
+    // Verify HMAC
+    const hmac      = req.headers['x-shopify-hmac-sha256'];
+    const generated = crypto
+      .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
+      .update(req.rawBody)
+      .digest('base64');
 
-      if (generated !== hmac) {
-        console.error('❌ Webhook HMAC failed');
-        return res.status(401).send('Unauthorized');
-      }
-
-      const customer = req.body;
-
-      // Only process spin-wheel-winner customers
-      if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
-        return res.status(200).send('OK');
-      }
-
-      // Get their metafield
-      const mf = await shopify('GET',
-        `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
-      );
-
-      if (mf.metafields.length === 0) return res.status(200).send('OK');
-
-      const metafield = mf.metafields[0];
-      const current   = JSON.parse(metafield.value);
-
-      // Skip if already marked as used
-      if (current.used) return res.status(200).send('OK');
-
-      // Check if their discount code still exists in Shopify
-      // If code was redeemed, Shopify will have removed it
-      try {
-        await shopify('GET',
-          `/price_rules/${current.priceRuleId}/discount_codes.json`
-        );
-        // Code still exists — not redeemed yet
-        return res.status(200).send('OK');
-
-      } catch (codeErr) {
-        // Price rule or code no longer exists — was redeemed
-        await shopify('PUT',
-          `/customers/${customer.id}/metafields/${metafield.id}.json`,
-          {
-            metafield: {
-              id:    metafield.id,
-              value: JSON.stringify({
-                ...current,
-                used:        true,
-                redeemed_at: new Date().toISOString(),
-              }),
-              type: 'json',
-            }
-          }
-        );
-        console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
-        return res.status(200).send('OK');
-      }
-
-    } catch (err) {
-      console.error('❌ Customer update webhook error:', err.message);
-      res.status(500).send('Error');
+    if (generated !== hmac) {
+      console.error('❌ Webhook HMAC failed');
+      return res.status(401).send('Unauthorized');
     }
+
+    const customer = req.body;
+
+    // Only process spin-wheel-winner customers
+    if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
+      return res.status(200).send('OK');
+    }
+
+    // Get their spin wheel metafield
+    const mf = await shopify('GET',
+      `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
+    );
+
+    if (mf.metafields.length === 0) return res.status(200).send('OK');
+
+    const metafield = mf.metafields[0];
+    const current   = JSON.parse(metafield.value);
+
+    // Skip if already marked as used
+    if (current.used) {
+      console.log(`ℹ️ Code ${current.code} already marked as used — skipping`);
+      return res.status(200).send('OK');
+    }
+
+    // Check usage count of the discount code directly from Shopify
+    const discountData = await shopify('GET',
+      `/price_rules/${current.priceRuleId}/discount_codes.json`
+    );
+
+    const discountCode = discountData.discount_codes.find(
+      dc => dc.code === current.code
+    );
+
+    // If code not found OR usage_count >= 1 → it was redeemed
+    const wasRedeemed = !discountCode || discountCode.usage_count >= 1;
+
+    if (wasRedeemed) {
+      await shopify('PUT',
+        `/customers/${customer.id}/metafields/${metafield.id}.json`,
+        {
+          metafield: {
+            id:    metafield.id,
+            value: JSON.stringify({
+              ...current,
+              used:        true,
+              redeemed_at: new Date().toISOString(),
+            }),
+            type: 'json',
+          }
+        }
+      );
+      console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
+    } else {
+      console.log(`ℹ️ Code ${current.code} not yet used — usage_count: ${discountCode.usage_count}`);
+    }
+
+    res.status(200).send('OK');
+
+  } catch (err) {
+    console.error('❌ Customer update webhook error:', err.message);
+    res.status(500).send('Error');
   }
-);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
