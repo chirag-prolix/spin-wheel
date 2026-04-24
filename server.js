@@ -324,6 +324,12 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
       return res.status(200).send('OK');
     }
 
+    // ── Wait 10s for Shopify to update usage_count ────────────────────────────
+    // Webhook fires before Shopify updates the discount code usage_count
+    console.log('⏳ Waiting 10s for Shopify to update usage_count...');
+    await new Promise(function(resolve) { setTimeout(resolve, 10000); });
+    console.log('✅ Wait complete — checking usage_count now');
+
     // Check discount code usage in Shopify
     try {
       const dcData = await shopify('GET',
