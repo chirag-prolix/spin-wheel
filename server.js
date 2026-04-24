@@ -289,10 +289,19 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
     const customerId = payload.id;
     console.log('🔔 customer id:', customerId);
 
-    // Fetch full customer to get accurate tags
-    const fullCustomer = await shopify('GET', `/customers/${customerId}.json`);
-    const customer     = fullCustomer.customer;
-    const tags         = customer.tags || '';
+    let customer;
+    try {
+      const result = await shopify('GET', `/customers/${customerId}.json`);
+      customer = result.customer;
+    } catch (fetchErr) {
+      if (fetchErr.response?.status === 404) {
+        console.log('⏭️ Customer not found — skipping:', customerId);
+        return res.status(200).send('OK');
+      }
+      throw fetchErr;
+    }
+
+    const tags = customer.tags || '';
 
     console.log('🏷️ Full customer tags:', tags);
 
