@@ -269,10 +269,7 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
 });
 
 app.post('/api/webhooks/customer-updated', async (req, res) => {
-  // Log immediately — before any processing
   console.log('🔔 customer-updated webhook received at', new Date().toISOString());
-  console.log('🔔 customer tags:', req.body?.tags);
-  console.log('🔔 customer id:', req.body?.id);
 
   try {
     const hmac      = req.headers['x-shopify-hmac-sha256'];
@@ -283,29 +280,37 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
 
     if (generated !== hmac) {
       console.error('❌ Webhook HMAC failed');
-      console.error('Expected:', generated);
-      console.error('Received:', hmac);
       return res.status(401).send('Unauthorized');
     }
 
     console.log('✅ HMAC verified');
 
-    const customer = req.body;
+    const payload    = req.body;
+    const customerId = payload.id;
+    console.log('🔔 customer id:', customerId);
 
-    var tags = customer.tags || '';
+    // ── Fetch FULL customer record from Shopify API ──────────────────────
+    // Webhook payload doesn't always include tags — fetch to be sure
+    const fullCustomer = await shopify('GET', `/customers/${customerId}.json`);
+    const customer     = fullCustomer.customer;
+    const tags         = customer.tags || '';
+
+    console.log('🏷️ Full customer tags:', tags);
+
     if (!tags.includes('spin-wheel-winner')) {
-      console.log('⏭️ Skipping — not a spin-wheel-winner, tags:', tags);
+      console.log('⏭️ Skipping — not a spin-wheel-winner');
       return res.status(200).send('OK');
     }
 
-    console.log('🎯 Processing spin-wheel-winner customer:', customer.id);
+    console.log('🎯 Processing spin-wheel-winner customer:', customerId);
 
+    // Get their spin wheel metafield
     const mf = await shopify('GET',
-      `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
+      `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
     );
 
     if (mf.metafields.length === 0) {
-      console.log('⏭️ No metafield found for customer:', customer.id);
+      console.log('⏭️ No metafield found for customer:', customerId);
       return res.status(200).send('OK');
     }
 
@@ -346,7 +351,7 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
       console.log('🎯 Marking as redeemed:', checkErr.message);
 
       await shopify('PUT',
-        `/customers/${customer.id}/metafields/${metafield.id}.json`,
+        `/customers/${customerId}/metafields/${metafield.id}.json`,
         {
           metafield: {
             id:    metafield.id,
@@ -360,13 +365,12 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
         }
       );
 
-      console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
+      console.log(`✅ Marked ${current.code} as redeemed for customer ${customerId}`);
       return res.status(200).send('OK');
     }
 
   } catch (err) {
     console.error('❌ Customer update webhook error:', err.message);
-    console.error('Stack:', err.stack);
     res.status(500).send('Error');
   }
 });
