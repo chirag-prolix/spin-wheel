@@ -5,7 +5,9 @@ const axios   = require('axios');
 const crypto  = require('crypto');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 app.use(cors({ origin: '*' }));
 
 // ─── Dynamic Shopify helper ───────────────────────────────────────────────────
@@ -266,14 +268,12 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
   }
 });
 
-app.post('/api/webhooks/code-redeemed',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
+app.post('/api/webhooks/code-redeemed', async (req, res) => {
     try {
       const hmac      = req.headers['x-shopify-hmac-sha256'];
       const generated = crypto
-        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET) // ← changed
-        .update(req.body)
+        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
+        .update(req.rawBody)
         .digest('base64');
 
       if (generated !== hmac) {
@@ -281,7 +281,7 @@ app.post('/api/webhooks/code-redeemed',
         return res.status(401).send('Unauthorized');
       }
 
-      const payload = JSON.parse(req.body);
+      const payload = req.body;
       console.log('🎯 Code redeemed webhook:', JSON.stringify(payload));
 
       // payload.code contains the discount code that was used
@@ -337,15 +337,13 @@ app.post('/api/webhooks/code-redeemed',
   }
 );
 
-app.post('/api/webhooks/customer-updated',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
+app.post('/api/webhooks/customer-updated', async (req, res) => {
     try {
       // Verify HMAC
       const hmac      = req.headers['x-shopify-hmac-sha256'];
       const generated = crypto
         .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
-        .update(req.body)
+        .update(req.rawBody)
         .digest('base64');
 
       if (generated !== hmac) {
@@ -353,7 +351,7 @@ app.post('/api/webhooks/customer-updated',
         return res.status(401).send('Unauthorized');
       }
 
-      const customer = JSON.parse(req.body);
+      const customer = req.body;
 
       // Only process spin-wheel-winner customers
       if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
