@@ -270,10 +270,9 @@ app.post('/api/webhooks/code-redeemed',
   express.raw({ type: 'application/json' }),
   async (req, res) => {
     try {
-      // Verify request is from Shopify
       const hmac      = req.headers['x-shopify-hmac-sha256'];
       const generated = crypto
-        .createHmac('sha256', process.env.SHOPIFY_SECRET)
+        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET) // ← changed
         .update(req.body)
         .digest('base64');
 
