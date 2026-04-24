@@ -292,8 +292,9 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
 
     const customer = req.body;
 
-    if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
-      console.log('⏭️ Skipping — not a spin-wheel-winner, tags:', customer.tags);
+    var tags = customer.tags || '';
+    if (!tags.includes('spin-wheel-winner')) {
+      console.log('⏭️ Skipping — not a spin-wheel-winner, tags:', tags);
       return res.status(200).send('OK');
     }
 
