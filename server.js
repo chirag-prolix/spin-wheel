@@ -336,5 +336,78 @@ app.post('/api/webhooks/code-redeemed',
     }
   }
 );
+
+app.post('/api/webhooks/customer-updated',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      // Verify HMAC
+      const hmac      = req.headers['x-shopify-hmac-sha256'];
+      const generated = crypto
+        .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
+        .update(req.body)
+        .digest('base64');
+
+      if (generated !== hmac) {
+        console.error('❌ Webhook HMAC failed');
+        return res.status(401).send('Unauthorized');
+      }
+
+      const customer = JSON.parse(req.body);
+
+      // Only process spin-wheel-winner customers
+      if (!customer.tags || !customer.tags.includes('spin-wheel-winner')) {
+        return res.status(200).send('OK');
+      }
+
+      // Get their metafield
+      const mf = await shopify('GET',
+        `/customers/${customer.id}/metafields.json?namespace=spin_wheel&key=coupon`
+      );
+
+      if (mf.metafields.length === 0) return res.status(200).send('OK');
+
+      const metafield = mf.metafields[0];
+      const current   = JSON.parse(metafield.value);
+
+      // Skip if already marked as used
+      if (current.used) return res.status(200).send('OK');
+
+      // Check if their discount code still exists in Shopify
+      // If code was redeemed, Shopify will have removed it
+      try {
+        await shopify('GET',
+          `/price_rules/${current.priceRuleId}/discount_codes.json`
+        );
+        // Code still exists — not redeemed yet
+        return res.status(200).send('OK');
+
+      } catch (codeErr) {
+        // Price rule or code no longer exists — was redeemed
+        await shopify('PUT',
+          `/customers/${customer.id}/metafields/${metafield.id}.json`,
+          {
+            metafield: {
+              id:    metafield.id,
+              value: JSON.stringify({
+                ...current,
+                used:        true,
+                redeemed_at: new Date().toISOString(),
+              }),
+              type: 'json',
+            }
+          }
+        );
+        console.log(`✅ Marked ${current.code} as redeemed for customer ${customer.id}`);
+        return res.status(200).send('OK');
+      }
+
+    } catch (err) {
+      console.error('❌ Customer update webhook error:', err.message);
+      res.status(500).send('Error');
+    }
+  }
+);
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
