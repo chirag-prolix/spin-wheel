@@ -289,8 +289,7 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
     const customerId = payload.id;
     console.log('🔔 customer id:', customerId);
 
-    // ── Fetch FULL customer record from Shopify API ──────────────────────
-    // Webhook payload doesn't always include tags — fetch to be sure
+    // Fetch full customer to get accurate tags
     const fullCustomer = await shopify('GET', `/customers/${customerId}.json`);
     const customer     = fullCustomer.customer;
     const tags         = customer.tags || '';
@@ -304,13 +303,13 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
 
     console.log('🎯 Processing spin-wheel-winner customer:', customerId);
 
-    // Get their spin wheel metafield
+    // Get metafield
     const mf = await shopify('GET',
       `/customers/${customerId}/metafields.json?namespace=spin_wheel&key=coupon`
     );
 
     if (mf.metafields.length === 0) {
-      console.log('⏭️ No metafield found for customer:', customerId);
+      console.log('⏭️ No metafield found');
       return res.status(200).send('OK');
     }
 
@@ -320,63 +319,57 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
     console.log('📋 Current metafield:', JSON.stringify(current));
 
     if (current.used) {
-      console.log('ℹ️ Code already marked as used:', current.code);
+      console.log('ℹ️ Already marked as used');
       return res.status(200).send('OK');
     }
 
-    // ── Wait 10s for Shopify to update usage_count ────────────────────────────
-    // Webhook fires before Shopify updates the discount code usage_count
-    console.log('⏳ Waiting 10s for Shopify to update usage_count...');
-    await new Promise(function(resolve) { setTimeout(resolve, 10000); });
-    console.log('✅ Wait complete — checking usage_count now');
+    // Check customer's recent orders for spin wheel code
+    const ordersData = await shopify('GET',
+      `/customers/${customerId}/orders.json?status=any&limit=10`
+    );
 
-    // Check discount code usage in Shopify
-    try {
-      const dcData = await shopify('GET',
-        `/price_rules/${current.priceRuleId}/discount_codes.json`
-      );
+    console.log('📦 Recent orders count:', ordersData.orders.length);
 
-      const discountCode = dcData.discount_codes.find(
-        dc => dc.code === current.code
-      );
-
-      console.log('🔍 Discount code data:', JSON.stringify(discountCode));
-
-      if (!discountCode) {
-        throw new Error('Code not found — likely redeemed');
-      }
-
-      if (discountCode.usage_count >= 1) {
-        throw new Error('usage_count >= 1 — redeemed');
-      }
-
-      console.log('ℹ️ Code still valid, usage_count:', discountCode.usage_count);
-      return res.status(200).send('OK');
-
-    } catch (checkErr) {
-      console.log('🎯 Marking as redeemed:', checkErr.message);
-
-      await shopify('PUT',
-        `/customers/${customerId}/metafields/${metafield.id}.json`,
-        {
-          metafield: {
-            id:    metafield.id,
-            value: JSON.stringify({
-              ...current,
-              used:        true,
-              redeemed_at: new Date().toISOString(),
-            }),
-            type: 'json',
-          }
+    var codeUsedInOrder = false;
+    for (var i = 0; i < ordersData.orders.length; i++) {
+      var order = ordersData.orders[i];
+      var codes  = order.discount_codes || [];
+      for (var j = 0; j < codes.length; j++) {
+        if (codes[j].code === current.code) {
+          codeUsedInOrder = true;
+          console.log('🎯 Code found in order:', order.id);
+          break;
         }
-      );
+      }
+      if (codeUsedInOrder) break;
+    }
 
-      console.log(`✅ Marked ${current.code} as redeemed for customer ${customerId}`);
+    if (!codeUsedInOrder) {
+      console.log('ℹ️ Code not used in any order — skipping');
       return res.status(200).send('OK');
     }
+
+    // Mark as redeemed
+    await shopify('PUT',
+      `/customers/${customerId}/metafields/${metafield.id}.json`,
+      {
+        metafield: {
+          id:    metafield.id,
+          value: JSON.stringify({
+            ...current,
+            used:        true,
+            redeemed_at: new Date().toISOString(),
+          }),
+          type: 'json',
+        }
+      }
+    );
+
+    console.log(`✅ Marked ${current.code} as redeemed for customer ${customerId}`);
+    return res.status(200).send('OK');
 
   } catch (err) {
-    console.error('❌ Customer update webhook error:', err.message);
+    console.error('❌ Webhook error:', err.message);
     res.status(500).send('Error');
   }
 });
