@@ -14,9 +14,9 @@ Storefront Popup (Liquid + JS)
          ▼
 Shopify App Proxy (/tools/spin/*)
          │
-         │  forwards to Railway backend
+         │  forwards to Vercel backend
          ▼
-Node.js / Express (Railway)
+Node.js / Express (Vercel)
          │
          ├── Creates PriceRule + DiscountCode
          ├── Finds or Creates Customer
@@ -32,8 +32,10 @@ Node.js / Express (Railway)
 ```
 spin-wheel/
 ├── server.js        ← entire backend (all routes + logic)
+├── api/index.js     ← Vercel serverless entry point
+├── vercel.json      ← tells Vercel how to route requests
 ├── package.json     ← dependencies
-├── Procfile         ← tells Railway how to start: web: node server.js
+├── Procfile         ← for local/legacy use: web: node server.js
 ├── .gitignore       ← ignores node_modules/ and .env
 └── README.md        ← this file
 ```
@@ -42,7 +44,7 @@ spin-wheel/
 
 ## ⚙️ Environment Variables
 
-Set these in Railway → Variables:
+Set these in Vercel → Project → Settings → Environment Variables:
 
 | Variable | Example | Description |
 |---|---|---|
@@ -50,8 +52,9 @@ Set these in Railway → Variables:
 | `SHOPIFY_ACCESS_TOKEN` | `shpat_xxxxx` | Admin API token from legacy custom app |
 | `SHOPIFY_CLIENT_ID` | `4d8248ec...` | App Client ID from Dev Dashboard |
 | `SHOPIFY_SECRET` | `your_secret` | App Secret from Dev Dashboard |
+| `SHOPIFY_WEBHOOK_SECRET` | `your_webhook_secret` | Used to verify Shopify webhook HMAC |
 | `ADMIN_KEY` | `k7x9mq2p4r8tz3n6` | Your custom secret for admin routes |
-| `PORT` | `8080` | Railway uses 8080 by default |
+| `APP_URL` | `https://spin-wheel-puce.vercel.app` | Your Vercel deployment URL |
 
 ---
 
@@ -137,8 +140,8 @@ Content-Type: application/json
 |---|---|---|
 | `400` | `Missing fields` | `firstName` or `email` not provided |
 | `400` | `Invalid discount` | Discount not 10, 20, or 30 |
-| `409` | `You have already claimed a discount.` | Same email spun before |
-| `500` | `Something went wrong.` | Shopify API error — check Railway logs |
+| `409` | `You have already claimed a discount.` | Same email spun twice |
+| `500` | `Something went wrong.` | Shopify API error — check Vercel logs |
 
 ---
 
@@ -194,7 +197,7 @@ Exchanges the code for a permanent access token and displays it on screen.
 ```
 GET /auth/callback?code=xxxxx&shop=logan-brewing.myshopify.com
 → Displays access token on page
-→ Logs token to Railway console
+→ Logs token to Vercel console
 ```
 
 ---
@@ -233,6 +236,7 @@ x-admin-key: your_admin_key_here
 | 7-day expiry | `ends_at` set on PriceRule creation |
 | Double-spin prevention | Metafield check before creating code |
 | Admin route protection | `x-admin-key` header required |
+| Webhook verification | HMAC signature check using `SHOPIFY_WEBHOOK_SECRET` |
 | Email verification | Shopify account invite sent after spin |
 
 ---
@@ -278,11 +282,11 @@ Customer (found or created)
 
 | Resource | URL |
 |---|---|
-| Railway backend | `https://spin-wheel-production-c4f7.up.railway.app` |
-| Health check | `https://spin-wheel-production-c4f7.up.railway.app/health` |
+| Vercel backend | `https://spin-wheel-puce.vercel.app` |
+| Health check | `https://spin-wheel-puce.vercel.app/health` |
 | App Proxy base | `https://logan-brewing.myshopify.com/tools/spin` |
 | Shopify Dev Dashboard | `https://dev.shopify.com/dashboard` |
-| Railway dashboard | `https://railway.app` |
+| Vercel dashboard | `https://vercel.com/dashboard` |
 | Shopify Discounts | `https://admin.shopify.com/store/logan-brewing/discounts` |
 | Shopify Customers | `https://admin.shopify.com/store/logan-brewing/customers` |
 
@@ -292,24 +296,24 @@ Customer (found or created)
 
 ### Health check
 ```bash
-curl https://spin-wheel-production-c4f7.up.railway.app/health
+curl https://spin-wheel-puce.vercel.app/health
 ```
 
 ### Test spin (creates real Shopify discount)
 ```bash
-curl -X POST https://spin-wheel-production-c4f7.up.railway.app/api/spin \
+curl -X POST https://spin-wheel-puce.vercel.app/api/spin \
   -H "Content-Type: application/json" \
   -d '{"firstName":"Test","email":"test@example.com","discount":20}'
 ```
 
 ### Fetch saved coupon
 ```bash
-curl "https://spin-wheel-production-c4f7.up.railway.app/api/coupon?customerId=7123456789"
+curl "https://spin-wheel-puce.vercel.app/api/coupon?customerId=7123456789"
 ```
 
 ### Fix subscriptions (admin)
 ```bash
-curl https://spin-wheel-production-c4f7.up.railway.app/api/admin/fix-subscriptions \
+curl https://spin-wheel-puce.vercel.app/api/admin/fix-subscriptions \
   -H "x-admin-key: your_admin_key"
 ```
 
@@ -326,11 +330,11 @@ curl https://logan-brewing.myshopify.com/tools/spin/health
 |---|---|---|
 | `Cannot GET /` | No root route — expected | Use `/health` to test |
 | `Cannot GET /api/spin` | It's POST only | Use Postman with POST method |
-| `404` on proxy URL | Backend not running | Check Railway deployment logs |
-| `401 Unauthorized` | Wrong `x-admin-key` | Check `ADMIN_KEY` Railway variable |
+| `404` on proxy URL | Backend not running or App Proxy URL wrong | Check Vercel deployment + Shopify Dev Dashboard App Proxy URL |
+| `401 Unauthorized` | Wrong `x-admin-key` | Check `ADMIN_KEY` Vercel variable |
 | `409 Already claimed` | Same email spun twice | Expected — working correctly |
-| `500 Something went wrong` | Shopify API error | Check Railway logs for details |
-| `Token undefined` | `SHOPIFY_ACCESS_TOKEN` missing | Add to Railway variables |
+| `500 Something went wrong` | Shopify API error | Check Vercel logs for details |
+| `Token undefined` | `SHOPIFY_ACCESS_TOKEN` missing | Add to Vercel environment variables |
 | Customers not subscribed | Old `accepts_marketing` field | Run `/api/admin/fix-subscriptions` |
 | CSP error in browser console | Testing from admin panel | Test from storefront or use Postman |
 
@@ -340,11 +344,11 @@ curl https://logan-brewing.myshopify.com/tools/spin/health
 
 ```json
 {
-  "express":            "^4.x",
+  "express":            "^5.x",
   "cors":               "^2.x",
   "axios":              "^1.x",
-  "dotenv":             "^16.x",
-  "express-rate-limit": "^7.x"
+  "dotenv":             "^17.x",
+  "express-rate-limit": "^8.x"
 }
 ```
 
@@ -355,13 +359,14 @@ npm install express cors axios dotenv express-rate-limit
 
 ---
 
-## 🚢 Deployment (Railway)
+## 🚢 Deployment (Vercel)
 
 1. Push to GitHub
-2. Railway → New Project → GitHub Repository → select `spin-wheel`
-3. Add all environment variables in Railway → Variables
-4. Settings → Networking → Generate Domain
-5. Update App URL + Proxy URL in Shopify Dev Dashboard → Versions
+2. Vercel → New Project → Import `spin-wheel` repo
+3. Add all environment variables in Vercel → Settings → Environment Variables
+4. Click Deploy — Vercel auto-assigns a domain (e.g. `spin-wheel-puce.vercel.app`)
+5. Add `APP_URL` env var with the assigned domain, then redeploy
+6. Update App URL + Proxy URL in Shopify Dev Dashboard → Versions
 
 Auto-deploys on every `git push` to `main`.
 
