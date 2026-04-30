@@ -257,7 +257,7 @@ app.get('/api/admin/setup-webhook', async (req, res) => {
     const result = await shopify('POST', '/webhooks.json', {
       webhook: {
         topic:   'discounts/redeemcode_removed',
-        address: 'https://spin-wheel-production-c4f7.up.railway.app/api/webhooks/code-redeemed',
+        address: `${process.env.APP_URL}/api/webhooks/code-redeemed`,
         format:  'json',
       }
     });
@@ -384,5 +384,9 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`✅ Spin Wheel running on port ${PORT}`));
+}
+
+module.exports = app;
