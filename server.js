@@ -39,6 +39,14 @@ function getExpiryDate(days = 7) {
   return d.toISOString();
 }
 
+// Weighted random — adjust percentages here (must sum to 100)
+function weightedDiscount() {
+  const rand = Math.random() * 100;
+  if (rand < 60) return 10;  // 60% chance
+  if (rand < 90) return 20;  // 30% chance
+  return 30;                  // 10% chance
+}
+
 // ─── Create Price Rule + Discount Code ───────────────────────────────────────
 async function createDiscount(discountPct, email) {
   const code      = generateCode(discountPct);
@@ -180,14 +188,12 @@ app.get('/auth/callback', async (req, res) => {
 // POST /api/spin — main spin endpoint
 app.post('/api/spin', async (req, res) => {
   try {
-    const { email, firstName, discount } = req.body;
+    const { email, firstName } = req.body;
 
     if (!email || !firstName)
       return res.status(400).json({ error: 'Missing fields' });
-    if (![10, 20, 30].includes(+discount))
-      return res.status(400).json({ error: 'Invalid discount' });
 
-    const disc       = +discount;
+    const disc       = weightedDiscount();
     const customerId = await upsertCustomer(email, firstName);
     const { code, priceRuleId, expiresAt } = await createDiscount(disc, email);
 
