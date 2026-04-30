@@ -16,7 +16,7 @@ async function shopify(method, path, data = null) {
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
   const opts  = {
     method,
-    url: `https://${store}/admin/api/2026-04${path}`,
+    url: `https://${store}/admin/api/2026-01${path}`,
     headers: {
       'X-Shopify-Access-Token': token,
       'Content-Type': 'application/json',
