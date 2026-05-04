@@ -101,17 +101,21 @@ async function upsertCustomer(email, firstName) {
   if (search.customers.length > 0) {
     const existing = search.customers[0];
 
-    if (existing.email_marketing_consent?.state !== 'subscribed') {
-      await shopify('PUT', `/customers/${existing.id}.json`, {
-        customer: {
-          id: existing.id,
-          email_marketing_consent: {
-            state:              'subscribed',
-            opt_in_level:       'single_opt_in',
-            consent_updated_at: nowISO(),
-          },
-        },
-      });
+    const existingTags  = (existing.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+    const needsTag      = !existingTags.includes('spin-wheel-winner');
+    const needsConsent  = existing.email_marketing_consent?.state !== 'subscribed';
+
+    if (needsTag || needsConsent) {
+      const update = { id: existing.id };
+      if (needsTag)
+        update.tags = [...existingTags, 'spin-wheel-winner'].join(', ');
+      if (needsConsent)
+        update.email_marketing_consent = {
+          state:              'subscribed',
+          opt_in_level:       'single_opt_in',
+          consent_updated_at: nowISO(),
+        };
+      await shopify('PUT', `/customers/${existing.id}.json`, { customer: update });
     }
 
     return existing.id;
@@ -252,27 +256,6 @@ app.get('/api/coupon', async (req, res) => {
   } catch (err) {
     console.error('❌ /api/coupon error:', err.message);
     return res.status(500).json({ error: 'Failed to fetch coupon' });
-  }
-});
-
-app.get('/api/admin/setup-webhook', async (req, res) => {
-  const secret = req.headers['x-admin-key'];
-  if (secret !== process.env.ADMIN_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-
-  try {
-    const result = await shopify('POST', '/webhooks.json', {
-      webhook: {
-        topic:   'discounts/redeemcode_removed',
-        address: `${process.env.APP_URL}/api/webhooks/code-redeemed`,
-        format:  'json',
-      }
-    });
-    res.json({ success: true, webhook: result.webhook });
-  } catch (err) {
-    const shopifyError = err.response?.data || err.message;
-    console.error('❌ Webhook setup failed:', shopifyError);
-    res.status(500).json({ error: 'Webhook creation failed', details: shopifyError });
   }
 });
 
