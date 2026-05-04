@@ -234,12 +234,22 @@ app.post('/api/spin', async (req, res) => {
   }
 });
 
-// GET /api/coupon?customerId=xxx — fetch saved coupon for account page
+// GET /api/coupon?customerId=xxx  — or —  ?email=xxx
 app.get('/api/coupon', async (req, res) => {
   try {
-    const { customerId } = req.query;
-    if (!customerId)
-      return res.status(400).json({ error: 'Missing customerId' });
+    let { customerId, email } = req.query;
+
+    if (!customerId && !email)
+      return res.status(400).json({ error: 'Missing customerId or email' });
+
+    if (!customerId) {
+      const search = await shopify('GET',
+        `/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`
+      );
+      if (!search.customers.length)
+        return res.json({ coupon: null });
+      customerId = search.customers[0].id;
+    }
 
     const metafield = await getSpinMetafield(customerId);
 

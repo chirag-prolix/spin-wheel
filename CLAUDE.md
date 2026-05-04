@@ -69,7 +69,7 @@ The App Proxy is what allows the storefront to call this backend without CORS is
 | `GET` | `/auth` | — | OAuth Step 1 — redirects to Shopify |
 | `GET` | `/auth/callback` | — | OAuth Step 2 — exchanges code for access token |
 | `POST` | `/api/spin` | — | Main spin endpoint |
-| `GET` | `/api/coupon` | — | Fetch saved coupon by `?customerId=` |
+| `GET` | `/api/coupon` | — | Fetch saved coupon by `?customerId=` or `?email=` |
 | `POST` | `/api/webhooks/customer-updated` | HMAC | Marks metafield `used: true` on redemption |
 
 ---
