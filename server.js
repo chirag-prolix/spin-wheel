@@ -201,11 +201,13 @@ app.post('/api/spin', async (req, res) => {
     if (!email || !firstName)
       return res.status(400).json({ error: 'Missing fields' });
 
-    const disc = weightedDiscount();
-    const [customerId, { code, priceRuleId, expiresAt }] = await Promise.all([
-      upsertCustomer(email, firstName),
-      createDiscount(disc, email),
-    ]);
+    const disc       = weightedDiscount();
+    const customerId = await upsertCustomer(email, firstName);
+
+    const alreadySpun = await getSpinMetafield(customerId);
+    if (alreadySpun) return res.status(409).json({ error: 'You have already claimed a discount.' });
+
+    const { code, priceRuleId, expiresAt } = await createDiscount(disc, email);
 
     await saveMetafield(customerId, {
       code,

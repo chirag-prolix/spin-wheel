@@ -83,7 +83,7 @@ Request body: `{ email, firstName }` — **discount is server-determined, not su
 3. `createDiscount()` — creates a `PriceRule` + `DiscountCode` via Shopify Admin API (7-day expiry, single-use)
 4. `saveMetafield()` — saves coupon data to `spin_wheel/coupon` metafield; throws `ALREADY_SPUN` if one exists (this is the double-spin gate)
 
-> ⚠️ **Gotcha:** `createDiscount()` runs *before* `saveMetafield()`. If a customer is already blocked (`ALREADY_SPUN`), a dangling `PriceRule` + `DiscountCode` is created in Shopify but never returned or stored. These accumulate silently.
+> **Order matters:** `upsertCustomer()` → `getSpinMetafield()` check → `createDiscount()` → `saveMetafield()`. The double-spin gate runs *before* creating any Shopify resources, so blocked customers never produce dangling PriceRules. `saveMetafield()` has a second check as a race-condition safety net.
 
 **Webhook** (`POST /api/webhooks/customer-updated`): Listens for Shopify customer update events. When a `spin-wheel-winner` customer places an order using their spin code, it marks the metafield `used: true`. HMAC verified via `SHOPIFY_WEBHOOK_SECRET`.
 
