@@ -295,10 +295,13 @@ app.post('/api/webhooks/order-paid', async (req, res) => {
   console.log('📩 Webhook received: order-paid');
   try {
     const hmac      = req.headers['x-shopify-hmac-sha256'];
+    console.log('🔑 rawBody defined:', !!req.rawBody, '| length:', req.rawBody?.length);
+    console.log('🔑 received hmac:', hmac);
     const generated = crypto
       .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
       .update(req.rawBody)
       .digest('base64');
+    console.log('🔑 computed hmac:', generated);
 
     if (generated !== hmac) {
       console.error('❌ Webhook HMAC failed');
