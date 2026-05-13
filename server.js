@@ -202,6 +202,7 @@ app.get('/auth/callback', async (req, res) => {
 app.post('/api/spin', async (req, res) => {
   try {
     const { email, firstName } = req.body;
+    console.log('📧 /api/spin received:', JSON.stringify({ email, firstName }));
 
     if (!email || !firstName)
       return res.status(400).json({ error: 'Missing fields' });
