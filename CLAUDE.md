@@ -70,7 +70,7 @@ The App Proxy is what allows the storefront to call this backend without CORS is
 | `GET` | `/auth/callback` | — | OAuth Step 2 — exchanges code for access token |
 | `POST` | `/api/spin` | — | Main spin endpoint |
 | `GET` | `/api/coupon` | — | Fetch saved coupon by `?customerId=` or `?email=` |
-| `POST` | `/api/webhooks/customer-updated` | HMAC | Marks metafield `used: true` on redemption |
+| `POST` | `/api/webhooks/order-paid` | HMAC | Marks metafield `used: true` on redemption |
 
 ---
 
@@ -96,9 +96,8 @@ Request body: `{ email, firstName }` — **discount is server-determined, not su
 | `SHOPIFY_STORE` | Store domain (e.g. `logan-brewing.myshopify.com`) |
 | `SHOPIFY_ACCESS_TOKEN` | Admin API token from legacy custom app |
 | `SHOPIFY_CLIENT_ID` | App Client ID (OAuth only) |
-| `SHOPIFY_SECRET` | App Secret (OAuth only) |
-| `SHOPIFY_WEBHOOK_SECRET` | Used to verify Shopify webhook HMAC signatures |
-| `APP_URL` | Deployed Vercel URL — used when registering webhooks |
+| `SHOPIFY_SECRET` | App API secret key — also used to verify webhook HMAC signatures |
+| `SHOPIFY_WEBHOOK_SECRET` | Unused — Shopify signs API-registered webhooks with `SHOPIFY_SECRET`, not this |
 
 ---
 
