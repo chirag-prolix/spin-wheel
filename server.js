@@ -3,6 +3,10 @@ const express = require('express');
 const cors    = require('cors');
 const axios   = require('axios');
 const crypto  = require('crypto');
+const https   = require('https');
+
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25 });
+httpsAgent.setMaxListeners(25);
 
 const app = express();
 app.use(express.json({
@@ -25,6 +29,7 @@ async function shopify(method, path, data = null) {
       'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
       'Content-Type': 'application/json',
     },
+    httpsAgent,
   };
   if (data) opts.data = data;
   const res = await axios(opts);
@@ -358,6 +363,9 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Webhook error:', err.message);
+    if (err.response) {
+      console.error('❌ Shopify response:', JSON.stringify(err.response.data));
+    }
     res.status(500).send('Error');
   }
 });
