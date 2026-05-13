@@ -15,13 +15,11 @@ app.use(cors({ origin: '*' }));
 app.post('/api/webhooks/order-paid', express.raw({ type: 'application/json' }), async (req, res) => {
   console.log('📩 Webhook received: order-paid');
   try {
-    const hmac       = req.headers['x-shopify-hmac-sha256'];
-    const genNotif   = crypto.createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET).update(req.body).digest('base64');
-    const genSecret  = crypto.createHmac('sha256', process.env.SHOPIFY_SECRET).update(req.body).digest('base64');
-    console.log('🔑 received :', hmac);
-    console.log('🔑 notif    :', genNotif,  genNotif  === hmac ? '✅ MATCH' : '❌');
-    console.log('🔑 secret   :', genSecret, genSecret === hmac ? '✅ MATCH' : '❌');
-    const generated = genNotif;
+    const hmac      = req.headers['x-shopify-hmac-sha256'];
+    const generated = crypto
+      .createHmac('sha256', process.env.SHOPIFY_SECRET)
+      .update(req.body)
+      .digest('base64');
 
     if (generated !== hmac) {
       console.error('❌ Webhook HMAC failed');
