@@ -276,9 +276,22 @@ app.get('/api/coupon', async (req, res) => {
   }
 });
 
-app.post('/api/webhooks/customer-updated', async (req, res) => {
-  console.log('🔔 customer-updated webhook received at', nowISO());
+// ─── Resolve spin code owner via price rule title ────────────────────────────
+async function findCodeOwner(code) {
+  const lookup = await shopify('GET', `/discount_codes/lookup.json?code=${encodeURIComponent(code)}`);
+  const priceRuleId = lookup.discount_code.price_rule_id;
 
+  const { price_rule } = await shopify('GET', `/price_rules/${priceRuleId}.json`);
+  // Title format: "SpinWin 20% — email@example.com"
+  const email = price_rule.title.split('— ')[1]?.trim();
+  if (!email) return null;
+
+  const search = await shopify('GET', `/customers/search.json?query=email:${encodeURIComponent(email)}&limit=1`);
+  return search.customers[0] ?? null;
+}
+
+app.post('/api/webhooks/order-paid', async (req, res) => {
+  console.log('📩 Webhook received: order-paid');
   try {
     const hmac      = req.headers['x-shopify-hmac-sha256'];
     const generated = crypto
@@ -291,81 +304,55 @@ app.post('/api/webhooks/customer-updated', async (req, res) => {
       return res.status(401).send('Unauthorized');
     }
 
-    const customerId = req.body.id;
-    console.log('🔔 customer id:', customerId);
+    const spinCodes = (req.body.discount_codes || [])
+      .map(dc => dc.code)
+      .filter(code => code.startsWith('LUCKY'));
 
-    let customer;
-    try {
-      const result = await shopify('GET', `/customers/${customerId}.json`);
-      customer = result.customer;
-    } catch (fetchErr) {
-      if (fetchErr.response?.status === 404) {
-        console.log('⏭️ Customer not found — skipping:', customerId);
-        return res.status(200).send('OK');
+    if (!spinCodes.length) {
+      console.log('⏭️ No spin codes in order — skipping');
+      return res.status(200).send('OK');
+    }
+
+    for (const code of spinCodes) {
+      console.log('🎯 Processing spin code:', code);
+
+      const customer = await findCodeOwner(code);
+      if (!customer) {
+        console.log('⏭️ No owner found for code:', code);
+        continue;
       }
-      throw fetchErr;
-    }
 
-    const tags = customer.tags || '';
-    console.log('🏷️ Full customer tags:', tags);
+      const metafield = await getSpinMetafield(customer.id);
+      if (!metafield) {
+        console.log('⏭️ No metafield for customer:', customer.id);
+        continue;
+      }
 
-    if (!tags.includes('spin-wheel-winner')) {
-      console.log('⏭️ Skipping — not a spin-wheel-winner');
-      return res.status(200).send('OK');
-    }
+      const current = JSON.parse(metafield.value);
+      if (current.code !== code || current.used) {
+        console.log('⏭️ Code mismatch or already used — skipping');
+        continue;
+      }
 
-    console.log('🎯 Processing spin-wheel-winner customer:', customerId);
-
-    const metafield = await getSpinMetafield(customerId);
-
-    if (!metafield) {
-      console.log('⏭️ No metafield found');
-      return res.status(200).send('OK');
-    }
-
-    const current = JSON.parse(metafield.value);
-
-    console.log('📋 Current metafield:', JSON.stringify(current));
-
-    if (current.used) {
-      console.log('ℹ️ Already marked as used');
-      return res.status(200).send('OK');
-    }
-
-    const ordersData = await shopify('GET',
-      `/customers/${customerId}/orders.json?status=any&limit=10`
-    );
-
-    console.log('📦 Recent orders count:', ordersData.orders.length);
-
-    const codeUsedInOrder = ordersData.orders.some(order =>
-      (order.discount_codes || []).some(dc => dc.code === current.code)
-    );
-
-    if (!codeUsedInOrder) {
-      console.log('ℹ️ Code not used in any order — skipping');
-      return res.status(200).send('OK');
-    }
-
-    await shopify('PUT',
-      `/customers/${customerId}/metafields/${metafield.id}.json`,
-      {
-        metafield: {
-          id:    metafield.id,
-          value: JSON.stringify({ ...current, used: true, redeemed_at: nowISO() }),
-          type:  'json',
+      await shopify('PUT',
+        `/customers/${customer.id}/metafields/${metafield.id}.json`,
+        {
+          metafield: {
+            id:    metafield.id,
+            value: JSON.stringify({ ...current, used: true, redeemed_at: nowISO() }),
+            type:  'json',
+          }
         }
-      }
-    );
+      );
 
-    console.log(`✅ Marked ${current.code} as redeemed for customer ${customerId}`);
+      console.log(`✅ Marked ${code} as redeemed for customer ${customer.id}`);
+    }
+
     return res.status(200).send('OK');
 
   } catch (err) {
     console.error('❌ Webhook error:', err.message);
-    if (err.response) {
-      console.error('❌ Shopify response:', JSON.stringify(err.response.data));
-    }
+    if (err.response) console.error('❌ Shopify response:', JSON.stringify(err.response.data));
     res.status(500).send('Error');
   }
 });
