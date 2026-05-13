@@ -5,8 +5,8 @@ const axios   = require('axios');
 const crypto  = require('crypto');
 const https   = require('https');
 
+require('events').EventEmitter.defaultMaxListeners = 30;
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25 });
-httpsAgent.setMaxListeners(25);
 
 const app = express();
 app.use(express.json({
