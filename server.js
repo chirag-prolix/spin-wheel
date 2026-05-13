@@ -9,10 +9,78 @@ require('events').EventEmitter.defaultMaxListeners = 30;
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25 });
 
 const app = express();
-app.use(express.json({
-  verify: (req, _res, buf) => { req.rawBody = buf; },
-}));
 app.use(cors({ origin: '*' }));
+
+// Webhook registered BEFORE express.json() — express.raw() gives the untouched Buffer
+app.post('/api/webhooks/order-paid', express.raw({ type: 'application/json' }), async (req, res) => {
+  console.log('📩 Webhook received: order-paid');
+  try {
+    const hmac      = req.headers['x-shopify-hmac-sha256'];
+    const generated = crypto
+      .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
+      .update(req.body)
+      .digest('base64');
+
+    if (generated !== hmac) {
+      console.error('❌ Webhook HMAC failed');
+      return res.status(401).send('Unauthorized');
+    }
+
+    const order     = JSON.parse(req.body.toString('utf8'));
+    const spinCodes = (order.discount_codes || [])
+      .map(dc => dc.code)
+      .filter(code => code.startsWith('LUCKY'));
+
+    if (!spinCodes.length) {
+      console.log('⏭️ No spin codes in order — skipping');
+      return res.status(200).send('OK');
+    }
+
+    for (const code of spinCodes) {
+      console.log('🎯 Processing spin code:', code);
+
+      const customer = await findCodeOwner(code);
+      if (!customer) {
+        console.log('⏭️ No owner found for code:', code);
+        continue;
+      }
+
+      const metafield = await getSpinMetafield(customer.id);
+      if (!metafield) {
+        console.log('⏭️ No metafield for customer:', customer.id);
+        continue;
+      }
+
+      const current = JSON.parse(metafield.value);
+      if (current.code !== code || current.used) {
+        console.log('⏭️ Code mismatch or already used — skipping');
+        continue;
+      }
+
+      await shopify('PUT',
+        `/customers/${customer.id}/metafields/${metafield.id}.json`,
+        {
+          metafield: {
+            id:    metafield.id,
+            value: JSON.stringify({ ...current, used: true, redeemed_at: nowISO() }),
+            type:  'json',
+          }
+        }
+      );
+
+      console.log(`✅ Marked ${code} as redeemed for customer ${customer.id}`);
+    }
+
+    return res.status(200).send('OK');
+
+  } catch (err) {
+    console.error('❌ Webhook error:', err.message);
+    if (err.response) console.error('❌ Shopify response:', JSON.stringify(err.response.data));
+    res.status(500).send('Error');
+  }
+});
+
+app.use(express.json());
 
 const SHOPIFY_STORE        = process.env.SHOPIFY_STORE;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
@@ -291,75 +359,6 @@ async function findCodeOwner(code) {
   return search.customers[0] ?? null;
 }
 
-app.post('/api/webhooks/order-paid', async (req, res) => {
-  console.log('📩 Webhook received: order-paid');
-  try {
-    const hmac      = req.headers['x-shopify-hmac-sha256'];
-    console.log('🔑 rawBody defined:', !!req.rawBody, '| length:', req.rawBody?.length);
-    console.log('🔑 received hmac:', hmac);
-    const generated = crypto
-      .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
-      .update(req.rawBody)
-      .digest('base64');
-    console.log('🔑 computed hmac:', generated);
-
-    if (generated !== hmac) {
-      console.error('❌ Webhook HMAC failed');
-      return res.status(401).send('Unauthorized');
-    }
-
-    const spinCodes = (req.body.discount_codes || [])
-      .map(dc => dc.code)
-      .filter(code => code.startsWith('LUCKY'));
-
-    if (!spinCodes.length) {
-      console.log('⏭️ No spin codes in order — skipping');
-      return res.status(200).send('OK');
-    }
-
-    for (const code of spinCodes) {
-      console.log('🎯 Processing spin code:', code);
-
-      const customer = await findCodeOwner(code);
-      if (!customer) {
-        console.log('⏭️ No owner found for code:', code);
-        continue;
-      }
-
-      const metafield = await getSpinMetafield(customer.id);
-      if (!metafield) {
-        console.log('⏭️ No metafield for customer:', customer.id);
-        continue;
-      }
-
-      const current = JSON.parse(metafield.value);
-      if (current.code !== code || current.used) {
-        console.log('⏭️ Code mismatch or already used — skipping');
-        continue;
-      }
-
-      await shopify('PUT',
-        `/customers/${customer.id}/metafields/${metafield.id}.json`,
-        {
-          metafield: {
-            id:    metafield.id,
-            value: JSON.stringify({ ...current, used: true, redeemed_at: nowISO() }),
-            type:  'json',
-          }
-        }
-      );
-
-      console.log(`✅ Marked ${code} as redeemed for customer ${customer.id}`);
-    }
-
-    return res.status(200).send('OK');
-
-  } catch (err) {
-    console.error('❌ Webhook error:', err.message);
-    if (err.response) console.error('❌ Shopify response:', JSON.stringify(err.response.data));
-    res.status(500).send('Error');
-  }
-});
 
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
